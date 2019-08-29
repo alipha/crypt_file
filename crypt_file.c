@@ -6,6 +6,7 @@
 // SECRETBOX_NONCE_BYTES
 
 #include "crypt_file.h"
+#include "blowfish.h"
 
 #include <sodium.h>
 
@@ -25,17 +26,18 @@
 #define KEY_BYTES 32U
 #define FILE_ID_SIZE 32U
 #define VERSION_SIZE 8U
-#define FIRST_CHUNK_OFFSET (FILE_FORMAT_SIZE + FILE_ID_SIZE + crypto_generichash_BYTES)
-#define CHUNK_SIZE 4032U
+#define FIRST_CHUNK_OFFSET (FILE_FORMAT_SIZE + 1 + FILE_ID_SIZE + crypto_generichash_BYTES)
+#define CHUNK_SIZE (4096U - FIRST_CHUNK_OFFSET)
 #define CHUNK_OVERHEAD (VERSION_SIZE - crypto_secretbox_MACBYTES)
 #define CHUNK_DATA_SIZE (CHUNK_SIZE - CHUNK_OVERHEAD)
 
-#define CRYPT_TRY(x) do { crypt_status status = (x); if(status != CRYPT_OK) return status; } while(false)
+#define CRYPT_TRY(x) do { crypt_status status = (x); if(status != CRYPT_OK) return status; } while(0)
 
 
 struct crypt_file {
     unsigned char data_chunk[CHUNK_DATA_SIZE];
     unsigned char key[KEY_BYTES];
+    BLOWFISH_KEY blowfish_key;
     unsigned char file_id[FILE_ID_SIZE];
     FILE *file;
     /*int writable;*/
@@ -46,7 +48,7 @@ struct crypt_file {
     uint64_t chunks;
     size_t last_chunk_size;
     size_t data_pos;   /* within chunk */
-    size_t data_size;  /* within chunk */
+    /*size_t data_size;*/  /* within chunk */
     /*unsigned char *data; */
     /*crypt_status status;*/
 };
@@ -55,20 +57,32 @@ struct crypt_file {
 static const char* crypt_mode_strs[] = {"rb", "r+b", "w+b", "w+bx"};
 
 static crypt_status init(crypt_file *cf, const unsigned char *master_key, crypt_mode mode);
-static void file_id_hash(crypt_file *cf, unsigned char *master_key, unsigned char *dest);
+static void file_id_hash(crypt_file *cf, const unsigned char *master_key, unsigned char *dest);
 
 static crypt_status read_chunk(crypt_file *cf);
 static crypt_status write_chunk(crypt_file *cf);
 static crypt_status switch_chunk(crypt_file *cf, uint64_t new_chunk_index);
 
+static crypt_status read_version(crypt_file *cf);
+static crypt_status perform_read(crypt_file *cf, unsigned char *encrypted_chunk, unsigned char *nonce, size_t read_amount);
+
+static size_t data_size(crypt_file *cf);
+
+static unsigned char *xor_bytes(unsigned char *dest, unsigned char *src, size_t size);
+
 static unsigned char *uint64_to_bytes(unsigned char *bytes, uint64_t value);
-static uint64_t bytes_to_uint64(unsigned char *bytes);
+static uint64_t bytes_to_uint64(const unsigned char *bytes);
 
 
 
 crypt_status crypt_open(const char *file_name, const unsigned char *key, crypt_mode mode, crypt_file **out_cf) {
     crypt_status status;
-    crypt_file *cf = malloc(sizeof(crypt_file));
+    crypt_file *cf;
+
+    if(sodium_init() == -1)
+        return CRYPT_SODIUM_ERROR;
+
+    cf = malloc(sizeof(crypt_file));
     *out_cf = NULL;
 
     if(!cf) 
@@ -94,13 +108,15 @@ crypt_status crypt_open(const char *file_name, const unsigned char *key, crypt_m
 
 
 crypt_status crypt_validate(crypt_file *cf) {
+    uint64_t i;
+
     if(!cf)
         return CRYPT_OK;
 
     uint64_t prev_chunk_index = cf->chunk_index;
     size_t prev_data_pos = cf->data_pos;
 
-    for(uint64_t i = 0; i < cf->chunks; i++) {
+    for(i = 0; i < cf->chunks; i++) {
         CRYPT_TRY(switch_chunk(cf, i));
     }
 
@@ -117,7 +133,7 @@ crypt_status crypt_read(crypt_file *cf, void *buffer, size_t max, size_t *out_si
     size_t data_left;
 
     while(max) {
-        data_left = cf->data_size - cf->data_pos;
+        data_left = data_size(cf) - cf->data_pos;
         if(!data_left) {
             if(cf->chunk_index >= cf->chunks - 1) {
                 *out_size = total_read;
@@ -131,7 +147,7 @@ crypt_status crypt_read(crypt_file *cf, void *buffer, size_t max, size_t *out_si
                 return status;
             }
 
-            data_left = cf->data_size;
+            data_left = data_size(cf);
         }
 
         read_amount = max >= data_left ? data_left : max;
@@ -151,11 +167,20 @@ crypt_status crypt_write(crypt_file *cf, const void *buffer, size_t size) {
     size_t space_left;
     size_t write_amount;
 
-    /* TODO: get rid of reads when the whole chunk is being written to */
     while(size) {
         space_left = CHUNK_DATA_SIZE - cf->data_pos;
         if(!space_left) {
-            CRYPT_TRY(switch_chunk(cf, cf->chunk_index + 1));
+            /*CRYPT_TRY(switch_chunk(cf, cf->chunk_index + 1));*/
+            CRYPT_TRY(write_chunk(cf));
+            cf->chunk_index++;
+
+            if(size < CHUNK_DATA_SIZE) {
+                CRYPT_TRY(read_chunk(cf));
+            } else {
+                CRYPT_TRY(read_version(cf));
+                cf->data_pos = 0;
+            }
+
             space_left = CHUNK_DATA_SIZE;
 
             if(cf->chunk_index == cf->chunks)
@@ -163,11 +188,56 @@ crypt_status crypt_write(crypt_file *cf, const void *buffer, size_t size) {
         }
 
         write_amount = size >= space_left ? space_left : size;
-        memcpy(cf->data_chunk, buffer, write_amount);
+        memcpy(cf->data_chunk + cf->data_pos, buffer, write_amount);
         cf->chunk_changed = 1;
         buffer += write_amount;
         size -= write_amount;
         cf->data_pos += write_amount;
+
+        if(cf->chunk_index == cf->chunks - 1)
+            cf->last_chunk_size = cf->data_pos;
+    }
+
+    return CRYPT_OK;
+}
+
+
+crypt_status crypt_fill(crypt_file *cf, char ch, size_t size) {
+    size_t space_left;
+    size_t write_amount;
+    int filled = 0;
+
+    while(size) {
+        space_left = CHUNK_DATA_SIZE - cf->data_pos;
+        if(!space_left) {
+            /*CRYPT_TRY(switch_chunk(cf, cf->chunk_index + 1));*/
+            CRYPT_TRY(write_chunk(cf));
+            cf->chunk_index++;
+
+            if(size < CHUNK_DATA_SIZE) {
+                CRYPT_TRY(read_chunk(cf));
+            } else {
+                CRYPT_TRY(read_version(cf));
+                cf->data_pos = 0;
+            }
+
+            space_left = CHUNK_DATA_SIZE;
+
+            if(cf->chunk_index == cf->chunks)
+                cf->chunks++;
+        }
+
+        write_amount = size >= space_left ? space_left : size;
+
+        if(!filled)
+            memset(cf->data_chunk + cf->data_pos, ch, write_amount);
+
+        cf->chunk_changed = 1;
+        size -= write_amount;
+        cf->data_pos += write_amount;
+
+        if(write_amount == CHUNK_DATA_SIZE)
+            filled = 1;
 
         if(cf->chunk_index == cf->chunks - 1)
             cf->last_chunk_size = cf->data_pos;
@@ -197,8 +267,13 @@ crypt_status crypt_seek(crypt_file *cf, long offset, int origin) {
         return CRYPT_ARGUMENT_ERROR;
     }
 
-    if(new_file_pos < 0 || new_file_pos > file_size)  /* TODO: allow seek past end of file */
+    if(new_file_pos < 0)
         return CRYPT_ARGUMENT_ERROR;
+
+    if(new_file_pos > file_size) {
+        CRYPT_TRY(crypt_seek(cf, 0, SEEK_END));
+        return crypt_fill(cf, new_file_pos - file_size);
+    }
 
     new_index = new_file_pos / CHUNK_DATA_SIZE;
 
@@ -249,6 +324,7 @@ crypt_status crypt_close(crypt_file *cf) {
 
 
 crypt_status init(crypt_file *cf, const unsigned char *master_key, crypt_mode mode) {
+    unsigned char blowfish_key[KEY_BYTES];
     unsigned char mac[crypto_generichash_BYTES];
     unsigned char header[FIRST_CHUNK_OFFSET];
 
@@ -268,7 +344,7 @@ crypt_status init(crypt_file *cf, const unsigned char *master_key, crypt_mode mo
     /* TODO: redundant with read_chunk? */
     cf->chunk_changed = 0;
     cf->data_pos = 0;
-    cf->data_size = 0;
+    /*cf->data_size = 0;*/
 
     if(size && size < FIRST_CHUNK_OFFSET)
         return CRYPT_ENCRYPTION_ERROR;
@@ -282,21 +358,21 @@ crypt_status init(crypt_file *cf, const unsigned char *master_key, crypt_mode mo
 
         strcpy(header, FILE_FORMAT_NAME);
         memcpy(header + FILE_FORMAT_SIZE, cf->file_id, sizeof cf->file_id);
-        file_id_hash(cf, master_key, header + FILE_FORMAT_NAME + sizeof cf->file_id);
+        file_id_hash(cf, master_key, header + FILE_FORMAT_SIZE + sizeof cf->file_id);
 
         if(mode != CRYPT_READ && !fwrite(header, sizeof header, 1, cf->file))
             return CRYPT_FILE_ERROR;
 
     } else if(fread(header, sizeof header, 1, cf->file)) {
-        if(sodium_memcmp(FILE_FORMAT_NAME, header, sizeof FILE_FORMAT_SIZE))
+        if(sodium_memcmp(FILE_FORMAT_NAME, header, FILE_FORMAT_SIZE))
             return CRYPT_FILE_FORMAT_ERROR;
 
-        if(header[FILE_FORMAT_NAME] != 1)
+        if(header[FILE_FORMAT_SIZE] != 1)
             return CRYPT_VERSION_ERROR;
 
-        memcpy(cf->file_id, header + FILE_FORMAT_NAME, sizeof cf->file_id);
+        memcpy(cf->file_id, header + FILE_FORMAT_SIZE + 1, sizeof cf->file_id);
         file_id_hash(cf, master_key, mac);
-        if(sodium_memcmp(mac, header + FILE_FORMAT_NAME + sizeof cf->file_id, sizeof mac))
+        if(sodium_memcmp(mac, header + FILE_FORMAT_SIZE + 1 + sizeof cf->file_id, sizeof mac))
             return CRYPT_KEY_ERROR;
 
         cf->chunks = (size + CHUNK_SIZE - FIRST_CHUNK_OFFSET - 1) / CHUNK_SIZE;
@@ -314,7 +390,9 @@ crypt_status init(crypt_file *cf, const unsigned char *master_key, crypt_mode mo
         return CRYPT_FILE_ERROR;
     }
 
-    crypto_generichash(cf->key, KEY_BYTES, header, sizeof header, master_key, KEY_BYTES);
+    crypto_generichash(cf->key, sizeof cf->key, header, sizeof header, master_key, KEY_BYTES);
+    crypto_generichash(blowfish_key, sizeof blowfish_key, cf->key, sizeof cf->key, master_key, KEY_BYTES);
+    blowfish_key_setup(blowfish_key, &cf->blowfish_key, sizeof blowfish_key);
 
     /*cf->data = data_chunk;
     cf->status = CRYPT_OK; */
@@ -325,7 +403,7 @@ crypt_status init(crypt_file *cf, const unsigned char *master_key, crypt_mode mo
 }
 
 
-void file_id_hash(crypt_file *cf, unsigned char *master_key, unsigned char *dest) {
+void file_id_hash(crypt_file *cf, const unsigned char *master_key, unsigned char *dest) {
     crypto_generichash(dest, crypto_generichash_BYTES, cf->file_id, sizeof cf->file_id, 
             master_key, KEY_BYTES);
 }
@@ -337,41 +415,41 @@ crypt_status read_chunk(crypt_file *cf) {
     size_t read_amount = cf->chunk_index == cf->chunks - 1 ? cf->last_chunk_size : CHUNK_SIZE;
 
     if(read_amount != 0) {
-        /* TODO: what if chunk_index is at the end of the file? */
-        if(fread(encrypted_chunk, 1, read_amount, cf->file) != read_amount)
-            return CRYPT_FILE_ERROR;
-
-        /* TODO: decrypt nonce */
-        memcpy(nonce, encrypted_chunk, VERSION_SIZE);
-        cf->chunk_version = bytes_to_uint64(nonce);
-        uint64_to_bytes(nonce + VERSION_SIZE, cf->chunk_index);
+        CRYPT_TRY(perform_read(cf, encrypted_chunk, nonce, read_amount));
 
         if(!crypto_secretbox_open_easy(cf->data_chunk, encrypted_chunk + VERSION_SIZE, read_amount - VERSION_SIZE, nonce, cf->key))
             return CRYPT_ENCRYPTION_ERROR;
+    } else {
+        cf->chunk_version = 0;
     }
 
     cf->chunk_changed = 0;
     cf->data_pos = 0;
-    cf->data_size = read_amount - CHUNK_OVERHEAD;
+    /*cf->data_size = read_amount - CHUNK_OVERHEAD;*/
     return CRYPT_OK;
 }
 
 
 crypt_status write_chunk(crypt_file *cf) {
     unsigned char encrypted_chunk[CHUNK_SIZE];
+    unsigned char encrypted_version[VERSION_SIZE];
     unsigned char nonce[crypto_secretbox_NONCEBYTES] = {0};
+    size_t size = data_size(cf);
 
-    if(!cf->chunk_changed || cf->data_size == 0)
+    if(!cf->chunk_changed || size == 0)
         return CRYPT_OK;
 
-    /* TODO: encrypt nonce */
-    uint64_to_bytes(encrypted_chunk, ++cf->chunk_version);
-    memcpy(nonce, encrypted_chunk, VERSION_SIZE);
+    uint64_to_bytes(nonce, ++cf->chunk_version);
+    /*memcpy(encrypted_chunk, nonce, VERSION_SIZE);*/
     uint64_to_bytes(nonce + VERSION_SIZE, cf->chunk_index);
 
-    crypto_secretbox_easy(encrypted_chunk + VERSION_SIZE, cf->data_chunk, cf->data_size, nonce, cf->key);
+    blowfish_encrypt(nonce, encrypted_version, &cf->blowfish_key);
+    xor_bytes(encrypted_version, nonce + VERSION_SIZE, sizeof cf->chunk_index);
+    blowfish_encrypt(encrypted_version, encrypted_chunk, &cf->blowfish_key);
 
-    if(!fwrite(encrypted_chunk, cf->data_size + CHUNK_OVERHEAD, 1, cf->file))
+    crypto_secretbox_easy(encrypted_chunk + VERSION_SIZE, cf->data_chunk, size, nonce, cf->key);
+
+    if(!fwrite(encrypted_chunk, size + CHUNK_OVERHEAD, 1, cf->file))
         return CRYPT_FILE_ERROR;
 
     cf->chunk_changed = 0;
@@ -390,6 +468,54 @@ crypt_status switch_chunk(crypt_file *cf, uint64_t new_chunk_index) {
 }
 
 
+crypt_status read_version(crypt_file *cf) {
+    unsigned char encrypted_chunk[CHUNK_SIZE];
+    unsigned char nonce[crypto_secretbox_NONCEBYTES] = {0};
+    size_t chunk_size = cf->chunk_index == cf->chunks - 1 ? cf->last_chunk_size : CHUNK_SIZE;
+
+    if(chunk_size != 0) {
+        CRYPT_TRY(perform_read(cf, encrypted_chunk, nonce, VERSION_SIZE));
+    } else {
+        cf->chunk_version = 0;
+    }
+
+    return CRYPT_OK;
+}
+
+
+crypt_status perform_read(crypt_file *cf, unsigned char *encrypted_chunk, unsigned char *nonce, size_t read_amount) {
+    unsigned char encrypted_version[VERSION_SIZE];
+
+    /* TODO: what if chunk_index is at the end of the file? */
+    if(fread(encrypted_chunk, 1, read_amount, cf->file) != read_amount)
+        return CRYPT_FILE_ERROR;
+
+    uint64_to_bytes(nonce + VERSION_SIZE, cf->chunk_index);
+    /*memcpy(nonce, encrypted_chunk, VERSION_SIZE);*/
+    blowfish_decrypt(encrypted_chunk, encrypted_version, &cf->blowfish_key);
+    xor_bytes(encrypted_version, nonce + VERSION_SIZE, sizeof cf->chunk_index);
+    blowfish_decrypt(encrypted_version, nonce, &cf->blowfish_key); 
+    cf->chunk_version = bytes_to_uint64(nonce);
+    return CRYPT_OK;
+}
+
+
+size_t data_size(crypt_file *cf) {
+    if(cf->chunk_index >= cf->chunks - 1)
+        return cf->last_chunk_size - CHUNK_OVERHEAD;
+    else
+        return CHUNK_DATA_SIZE;
+}
+
+
+unsigned char *xor_bytes(unsigned char *dest, unsigned char *src, size_t size) {
+    size_t i;
+    for(i = 0; i < size; i++)
+        dest[i] ^= src[i];
+    return dest;
+}
+
+
 unsigned char *uint64_to_bytes(unsigned char *bytes, uint64_t value) {
     bytes[0] = value & 255;
     bytes[1] = (value >> 8) & 255;
@@ -403,7 +529,7 @@ unsigned char *uint64_to_bytes(unsigned char *bytes, uint64_t value) {
 }
 
 
-uint64_t bytes_to_uint64(unsigned char *bytes) {
+uint64_t bytes_to_uint64(const unsigned char *bytes) {
     return bytes[0] 
         | ((uint16_t)bytes[1] << 8)
         | ((uint32_t)bytes[2] << 16)

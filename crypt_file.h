@@ -6,6 +6,7 @@
 
 typedef enum crypt_status {
     CRYPT_OK = 0,
+    CRYPT_SODIUM_ERROR,
     CRYPT_FILE_ERROR,
     CRYPT_MEMORY_ERROR,
     CRYPT_ENCRYPTION_ERROR,
@@ -21,8 +22,6 @@ typedef enum crypt_mode {
     CRYPT_RW = 1,
     CRYPT_OVERWRITE = 2,
     CRYPT_NEW = 3
-        /*,
-    CRYPT_APPEND = 4*/
 } crypt_mode;
 
 
@@ -40,13 +39,16 @@ typedef struct crypt_file crypt_file;
  * cannot be opened "for append".
  *
  * The `key` is a unsigned char[32] from which a file-specific key is derived to encrypt/decrypt the
- * file.
+ * file. The key should be completely random bytes or derived from a password using libsodium's
+ * crypto_pwhash.
  *
  * If the file is opened successfully and parsed sucessfully (if it already exists), then a
  * crypt_file* file handle is assigned to `*out_file_handle`. Else, NULL is assigned to the address
  * pointed to by `out_file_handle`.
  *
  * CRYPT_OK - returned upon successful opening and (if the file already exists) parsing of the file.
+ * CRYPT_SODIUM_ERROR - this library depends upon the libsodium library and libsodium did not
+ *      properly initialize.
  * CRYPT_FILE_ERROR - a file i/o error occurred while opening or reading the file. See ferror() for
  *      additional information.
  * CRYPT_MEMORY_ERROR - crypt_open failed to allocate memory for the crypt_file object.
@@ -93,8 +95,9 @@ crypt_status crypt_validate(crypt_file *cf);
 crypt_status crypt_read(crypt_file *cf, void *buffer, size_t max, size_t *out_size);
 
 /*
- * Encrypts and writes `size` bytes from `buffer` to the file. Writes are buffered and may not be
- * actually written until crypt_flush or crypt_close is called.
+ * Encrypts and writes `size` bytes from `buffer` to the file, starting at the current file 
+ * position. Writes are buffered and may not be actually written until crypt_flush or crypt_close 
+ * is called.
  *
  * `cf` must be a valid crypt_file* obtained from crypt_open.
  *
@@ -107,9 +110,27 @@ crypt_status crypt_read(crypt_file *cf, void *buffer, size_t max, size_t *out_si
  */
 crypt_status crypt_write(crypt_file *cf, const void *buffer, size_t size);
 
+
+/*
+ * Encrypts and writes the `ch` character `size` times to the file, starting at the current file 
+ * position. Writes are buffered and may not be actually written until crypt_flush or crypt_close is
+ * called.
+ *
+ * `cf` must be a valid crypt_file* obtained from crypt_open.
+ *
+ * Returns CRYPT_OK if no file i/o occurred and no decryption error occurred. Note that file i/o
+ *      errors may be due to writing previously-cached changes or reading in new sections of the
+ *      file to be cached, and not actually be related to the specific data being written. See
+ *      ferror() for additional information on the exact file error.
+ * Returns CRYPT_FILE_ERROR if a file i/o error occurred.
+ * Returns CRYPT_ENCRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
+ */
+crypt_status crypt_fill(crypt_file *cf, char ch, size_t size);
+
 /*
  * Seeks to a specific location in the file, which is an `offset` from a specified `origin`. The
- * new file location cannot be negative nor be greater than the size of the file. Offsets refer to
+ * new file location cannot be negative. Seeking past the end of the file results in encrypted
+ * nul characters being appended to the file up to the specified file location. Offsets refer to
  * the logical positions in the file and exclude any space overhead of the encryption.
  *
  * `cf` must be a valid crypt_file* obtained from crypt_open.
@@ -121,7 +142,7 @@ crypt_status crypt_write(crypt_file *cf, const void *buffer, size_t size);
  *      the section of the file that was seeked to.
  * Returns CRYPT_ENCRYPTION_ERROR if new file section has been corrupted or maliciously modified.
  * Returns CRYPT_ARGUMENT_ERROR if `origin` is not SEEK_SET, SEEK_CUR, or SEEK_END, or if the
- *      new file position is negative or greater than the size of the file.
+ *      new file position is negative.
  */
 crypt_status crypt_seek(crypt_file *cf, long offset, int origin);
 
