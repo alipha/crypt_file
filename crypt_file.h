@@ -10,7 +10,7 @@ typedef enum crypt_status {
     CRYPT_SODIUM_ERROR,
     CRYPT_FILE_ERROR,
     CRYPT_MEMORY_ERROR,
-    CRYPT_ENCRYPTION_ERROR,
+    CRYPT_DECRYPTION_ERROR,
     CRYPT_KEY_ERROR,
     CRYPT_VERSION_ERROR,
     CRYPT_FILE_FORMAT_ERROR,
@@ -59,14 +59,14 @@ typedef struct crypt_file crypt_file;
  *      library.
  * CRYPT_KEY_ERROR - the file already exists but was encrypted with a different key than the key
  *      that was provided.
- * CRYPT_ENCRYPTION_ERROR - the file already exists and the header stated it was a file encrypted
+ * CRYPT_DECRYPTION_ERROR - the file already exists and the header stated it was a file encrypted
  *      with this library version and the correct key, but decryption of the file failed, either
  *      due to corruption or malicious modification.
  */ 
 crypt_status crypt_open(const char *file_name, const unsigned char *key, crypt_mode mode, crypt_file **out_file_handle);
 
 
-crypt_status crypt_start(FILE *file, int writable, const unsigned char *key, size_t chunk_size, long file_offset, crypt_file **out_cf);
+crypt_status crypt_start(FILE *file, int writable, const unsigned char *key, size_t chunk_size, long file_offset, int unsafe_reads, crypt_file **out_cf);
 
 /*
  * Reads the whole file and validates the cryptographic integrity of the whole file. Normal usage
@@ -79,7 +79,7 @@ crypt_status crypt_start(FILE *file, int writable, const unsigned char *key, siz
  * Returns CRYPT_OK if the file has not been corrupted or maliciously modified, or `cf` is NULL.
  * Returns CRYPT_FILE_ERROR if a file i/o error occurred while reading the file (or writing cached
  *      changes.) See ferror() for additional information.
- * Returns CRYPT_ENCRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
+ * Returns CRYPT_DECRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
  */
 crypt_status crypt_validate(crypt_file *cf);
 
@@ -94,7 +94,7 @@ crypt_status crypt_validate(crypt_file *cf);
  * Returns CRYPT_OK if no error occurred while reading or decrypting the bytes from the file.
  * Returns CRYPT_FILE_ERROR if a file i/o error occurred while reading the file (or writing cached
  *      changes.) See ferror() for additional information.
- * Returns CRYPT_ENCRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
+ * Returns CRYPT_DECRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
  */
 crypt_status crypt_read(crypt_file *cf, void *buffer, size_t max, size_t *out_size);
 
@@ -110,7 +110,7 @@ crypt_status crypt_read(crypt_file *cf, void *buffer, size_t max, size_t *out_si
  *      file to be cached, and not actually be related to the specific data being written. See
  *      ferror() for additional information on the exact file error.
  * Returns CRYPT_FILE_ERROR if a file i/o error occurred.
- * Returns CRYPT_ENCRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
+ * Returns CRYPT_DECRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
  */
 crypt_status crypt_write(crypt_file *cf, const void *buffer, size_t size);
 
@@ -127,7 +127,7 @@ crypt_status crypt_write(crypt_file *cf, const void *buffer, size_t size);
  *      file to be cached, and not actually be related to the specific data being written. See
  *      ferror() for additional information on the exact file error.
  * Returns CRYPT_FILE_ERROR if a file i/o error occurred.
- * Returns CRYPT_ENCRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
+ * Returns CRYPT_DECRYPTION_ERROR if the cryptographic integrity of the file has been compromised.
  */
 crypt_status crypt_fill(crypt_file *cf, char ch, size_t size);
 
@@ -144,7 +144,7 @@ crypt_status crypt_fill(crypt_file *cf, char ch, size_t size);
  * Returns CRYPT_OK if the seek was successful.
  * Returns CRYPT_FILE_ERROR if a file i/o error occurred while writing cached data or reading
  *      the section of the file that was seeked to.
- * Returns CRYPT_ENCRYPTION_ERROR if new file section has been corrupted or maliciously modified.
+ * Returns CRYPT_DECRYPTION_ERROR if new file section has been corrupted or maliciously modified.
  * Returns CRYPT_ARGUMENT_ERROR if `origin` is not SEEK_SET, SEEK_CUR, or SEEK_END, or if the
  *      new file position is negative.
  */
