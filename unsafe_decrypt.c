@@ -33,7 +33,7 @@ unsafe_secretbox_open_detached(unsigned char *m, const unsigned char *c,
          (uintptr_t) c - (uintptr_t) m < clen) ||
         ((uintptr_t) m >= (uintptr_t) c &&
          (uintptr_t) m - (uintptr_t) c < clen)) { /* LCOV_EXCL_LINE */
-        memmove(m, c, clen);
+        memmove(m, c, (size_t)clen);
         c = m;
     }
     mlen0 = clen;
