@@ -22,17 +22,12 @@ unsafe_secretbox_open_detached(unsigned char *m, const unsigned char *c,
                           0x32, 0x2d, 0x62, 0x79,
                           0x74, 0x65, 0x20, 0x6b};
 
-    crypto_core_hsalsa20(subkey, n, k, ch); //NULL);
+    crypto_core_hsalsa20(subkey, n, k, ch);;
 
-
-  //  crypto_core_hsalsa20(subkey, n, k, NULL);
-  //  crypto_stream_salsa20(block0, crypto_stream_salsa20_KEYBYTES,
-  //                        n + 16, subkey);
-    //result = crypto_onetimeauth_poly1305_verify(mac, c, clen, block0) != 0;
     (void)mac;
     (void)result;
     if (m == NULL) {
-        return 0; /* result; */
+        return 0;
     }
     if (((uintptr_t) c >= (uintptr_t) m &&
          (uintptr_t) c - (uintptr_t) m < clen) ||
@@ -60,7 +55,7 @@ unsafe_secretbox_open_detached(unsigned char *m, const unsigned char *c,
     }
     sodium_memzero(subkey, sizeof subkey);
 
-    return 0; /*result;*/
+    return 0;
 }
 
 int
