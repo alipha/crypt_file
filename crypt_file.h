@@ -4,17 +4,19 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#define CRYPT_KEY_BYTES 32U
+
 
 typedef enum crypt_status {
     CRYPT_OK = 0,
-    CRYPT_SODIUM_ERROR,
-    CRYPT_FILE_ERROR,
-    CRYPT_MEMORY_ERROR,
-    CRYPT_DECRYPTION_ERROR,
-    CRYPT_KEY_ERROR,
-    CRYPT_VERSION_ERROR,
-    CRYPT_FILE_FORMAT_ERROR,
-    CRYPT_ARGUMENT_ERROR
+    CRYPT_SODIUM_ERROR = 1,
+    CRYPT_FILE_ERROR = 2,
+    CRYPT_MEMORY_ERROR = 3,
+    CRYPT_DECRYPTION_ERROR = 4,
+    CRYPT_KEY_ERROR = 5,
+    CRYPT_VERSION_ERROR = 6,
+    CRYPT_FILE_FORMAT_ERROR = 7,
+    CRYPT_ARGUMENT_ERROR = 8
 } crypt_status;
 
 
@@ -191,6 +193,13 @@ crypt_status crypt_close(crypt_file *cf);
  * Returns CRYPT_FILE_ERROR if an error occurred while flushing the changes to the file.
  */
 crypt_status crypt_stop(crypt_file *cf);
+
+
+/*
+ * Returns a human-readable description of the the crypt_status.
+ */ 
+const char *crypt_error(crypt_status status);
+
 
 #endif
 

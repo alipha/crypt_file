@@ -1,17 +1,3 @@
-# crypt_file
-A C library for effortlessly reading/writing encrypted files in the crypt_file file format.
-
-crypt_file provides a secure and simple API for random-access into an encrypted file, very similar to
-fopen/fwrite/fread/fseek/ftell/fclose. You only need to provide a key to the library to perform the
-encryption, and all the details of how the encryption is performed is handled automatically. This
-library uses its own file format and does not conform to any other existing file format.
-
-The library is built on top of libsodium, so you'll need libsodium installed. You'll also probably
-will want to use libsodium for generating encryption keys.
-
-Here's a simple example which generates a random key, writes a message to a file, and then reads back
-in that message:
-```c
 #include "crypt_file.h"
 #include <sodium.h>
 #include <stdio.h>
@@ -76,27 +62,4 @@ int main(void) {
  
     return 0;
 }
-```
 
-Note that writes are buffered, so crypt_write does not immediately write the data to the file. If
-you want to force changes to be written, use crypt_flush:
-
-```c
-    /* write "hello world!" encrypted to the file */
-    if((status = crypt_write(cf, sample_text, strlen(sample_text)))) {
-        fprintf(stderr, "crypt_write error: %s\n", crypt_error(status));
-        return 1;
-    } 
-
-    if((status = crypt_flush(cf))) {
-        fprintf(stderr, "crypt_flush error: %s\n", crypt_error(status));
-        return 1;
-    } 
-```
-
-Also note that since writes are buffered, if any calls to any library functions fail, the safest
-course of action would be to crypt_close the file and re-open it. Exactly which data has been
-successfully written and the file position after an error may be difficult to determine.
-
-
-See crypt_file.h for the exact definitions of the library's functions and additional information.
