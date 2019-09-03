@@ -76,7 +76,7 @@ crypt_status crypt_start(FILE *file, int writable, const unsigned char *key, siz
  *
  * The current file position is restored to what it was previously after calling this function.
  *
- * `cf` must be NULL or by a valid crypt_file* obtained from crypt_open or crypt_start.
+ * `cf` must be NULL or be a valid crypt_file* obtained from crypt_open or crypt_start.
  *
  * Returns CRYPT_OK if the file has not been corrupted or maliciously modified, or `cf` is NULL.
  * Returns CRYPT_FILE_ERROR if a file i/o error occurred while reading the file (or writing cached
@@ -158,13 +158,15 @@ crypt_status crypt_seek(crypt_file *cf, long offset, int origin);
  * not fail (but will produce undefined behavior if `cf` is invalid.)
  *
  * `cf` must be a valid crypt_file* obtained from crypt_open or crypt_start. 
+ *
+ * If `cf` is NULL, then -1 is returned.
  */
 long crypt_tell(crypt_file *cf);
 
 /*
  * Flushes any cached data from previous crypt_write calls which are uncommitted.
  *
- * `cf` must be NULL or by a valid crypt_file* obtained from crypt_open or crypt_start.
+ * `cf` must be NULL or be a valid crypt_file* obtained from crypt_open or crypt_start.
  *
  * Returns CRYPT_OK if no file i/o errors occurred or if `cf` is NULL.
  * Returns CRYPT_FILE_ERROR if an error occurred while flushing the changes.
@@ -175,7 +177,7 @@ crypt_status crypt_flush(crypt_file *cf);
  * Flushes any cached data, closes the file, and frees the memory pointed to by the crypt_file*.
  * `cf` is invalid after crypt_close and cannot be used with any other crypt_* functions.
  *
- * `cf` must be NULL or by a valid crypt_file* obtained from crypt_open or crypt_start.
+ * `cf` must be NULL or be a valid crypt_file* obtained from crypt_open or crypt_start.
  *
  * Returns CRYPT_OK if no file i/o errors occurred or if `cf` is NULL.
  * Returns CRYPT_FILE_ERROR if an error occurred while flushing the changes or closing the file.
@@ -187,19 +189,30 @@ crypt_status crypt_close(crypt_file *cf);
  *
  * `cf` is invalid after crypt_stop and cannot be used with any other crypt_* functions.
  *
- * `cf` must be NULL or by a valid crypt_file* obtained from crypt_start or crypt_open.
+ * `cf` must be NULL or be a valid crypt_file* obtained from crypt_start or crypt_open.
  *
  * Returns CRYPT_OK if no file i/o errors occurred or if `cf` is NULL.
  * Returns CRYPT_FILE_ERROR if an error occurred while flushing the changes to the file.
  */
 crypt_status crypt_stop(crypt_file *cf);
 
+/*
+ * Returns the number of bytes which have been written since changes were last flushed to the file.
+ * If the same bytes have been written multiple times (i.e., via crypt_write, crypt_seek, crypt_write)
+ * then those same bytes will be counted multiple times. If a file error has caused only some of the
+ * bytes to have been written, then this'll return the number of unwritten bytes (to the best of this
+ * function's ability to determine).
+ *
+ * `cf` must be NULL or be a valid crypt_file* obtained from crypt_start or crypt_open.
+ *
+ * If `cf` is NULL, 0 is returned.
+ */
+size_t crypt_unflushed(crypt_file *cf);
 
 /*
  * Returns a human-readable description of the the crypt_status.
  */ 
 const char *crypt_error(crypt_status status);
-
 
 #endif
 
